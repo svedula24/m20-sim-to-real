@@ -24,14 +24,25 @@ jobs:
       pull-requests: read
       issues: read
       id-token: write
+    env:
+      HAS_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
 
     steps:
+      # Without the secret the action fails the check on every PR. Skip with a notice instead: the review is advisory
+      # and never a required check, so a missing credential must not turn CI red.
+      - name: Check for the Claude credential
+        if: env.HAS_OAUTH_TOKEN != 'true'
+        run: |
+          echo "::notice title=Claude Code Review skipped::No CLAUDE_CODE_OAUTH_TOKEN secret on this repository. Run /install-github-app in Claude Code, or: claude setup-token, then gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo ${{ github.repository }}"
+
       - name: Checkout repository
+        if: env.HAS_OAUTH_TOKEN == 'true'
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
       - name: Run Claude Code Review
+        if: env.HAS_OAUTH_TOKEN == 'true'
         id: claude-review
         uses: anthropics/claude-code-action@v1
         with:
