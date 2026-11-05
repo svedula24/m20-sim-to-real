@@ -5,7 +5,8 @@
 FROM m20_autonomy:latest
 
 # cv2 (the keyframe recorder, the object-map builder, the fisheye camera node) and sensor_msgs_py (the lidar depth node)
-RUN apt-get update && apt-get install -y --no-install-recommends python3-opencv ros-humble-sensor-msgs-py \n    && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends python3-opencv ros-humble-sensor-msgs-py \
+    && rm -rf /var/lib/apt/lists/*
 
 # CUDA 12.8 wheels are the first with Blackwell (sm_120, RTX 50xx) kernels; they also run on 8.6/8.9 GPUs.
 # numpy<2 keeps ROS Humble's system Python packages (cv2, tf transformations) importable.
