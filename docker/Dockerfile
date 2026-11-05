@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /ws
 COPY src ./src
 # Vendor deps are pinned in tools/vendor.repos (ADR-003) but NOT built into the core
-# stack image by default: they need their own toolchains (drdds, mujoco, onnxruntime,
+# stack image by default: they need their own toolchains (mujoco, onnxruntime,
 # Isaac) and belong to later phases (bridge/SLAM/RL). Keeping them out keeps the
 # Phase-0 artifact lean and buildable. Enable when wanted: --build-arg IMPORT_VENDOR=true
 ARG IMPORT_VENDOR=false
@@ -25,7 +25,7 @@ RUN if [ "$IMPORT_VENDOR" = "true" ]; then \
     fi
 
 # drdds: vendor joint-interface messages (ADR-015) — a small pure-msg package that the
-# bridge (and the MuJoCo sim node) depend on. Always baked in, pinned to sdk_deploy.
+# bridge publishes /IMU_DATA with. Always baked in, pinned to sdk_deploy.
 ARG DRDDS_SHA=80e3d40084c4ed151ba6f88b0d55cf1d480aa45e
 RUN git clone --filter=blob:none --sparse https://github.com/DeepRoboticsLab/sdk_deploy.git /tmp/sdk \
     && git -C /tmp/sdk sparse-checkout set src/drdds \

@@ -20,8 +20,8 @@ Report at most five Nits per review.
 ## Do not report
 
 - Anything CI already enforces: `bash -n`, ShellCheck errors, Python compile errors, the unit tests
-- Content under `notes/`, `docs/assets/`, and recorded data (`*.mp4`, `*.jpg`, `*.png`, `*.pgm`, `*.ply`, `*.jsonl`)
-- Generated or vendored files: `tools/gazebo/models/**` (built by `make_m20_sdf.py`), `*.lock`
+- Content under `notes/` and recorded data (`*.mp4`, `*.jpg`, `*.png`, `*.pgm`, `*.ply`, `*.jsonl`)
+- Generated or vendored files: `*.lock`, `maps/*.pgm`
 - Hard-coded tuning numbers that the commit message or the comment next to them explains with a measurement
 
 ## Always check

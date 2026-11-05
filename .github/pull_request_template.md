@@ -7,7 +7,7 @@
 <!-- Tick what you ran. CI runs static + unit + build-and-test and Claude Code Review on every push. -->
 
 - [ ] `make unit` passes locally
-- [ ] Live check on the Godot or Gazebo stack (say which script, what you saw), or "not needed: pure logic"
+- [ ] Live check on the robot (which ladder step in docs/REAL_ROBOT.md, what number you measured), or "not needed: pure logic"
 - [ ] Claude Code Review findings read; each Important one fixed or answered in a comment
 
 ## Review notes

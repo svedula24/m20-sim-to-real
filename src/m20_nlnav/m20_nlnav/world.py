@@ -10,7 +10,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-# The detector's vocabulary (tools/splat/detector_node.py OFFICE; tests/test_nlnav_tier0.py keeps
+# The detector's vocabulary (the OWLv2 office vocabulary of the object-map builder; tests/test_nlnav_tier0.py keeps
 # them in sync). Known even before they're seen, so "go to the printer" can answer "haven't seen
 # one" instead of "didn't understand".
 DETECTOR_CLASSES = ["office chair", "desk", "computer monitor", "laptop", "keyboard", "computer mouse",
@@ -19,7 +19,7 @@ DETECTOR_CLASSES = ["office chair", "desk", "computer monitor", "laptop", "keybo
                     "desk lamp", "sofa", "person", "table", "storage cabinet", "microwave",
                     "refrigerator", "traffic cone", "ladder", "projector screen", "clock", "book"]
 
-# Words people use -> detector classes (tools/splat/detector_node.py OFFICE). A word can mean
+# Words people use -> detector classes (the detector's office vocabulary). A word can mean
 # several classes ("cabinet"); exact class names always match themselves (see classes_for()).
 SYNONYMS: Dict[str, List[str]] = {
     "chair": ["office chair"], "seat": ["office chair"],
