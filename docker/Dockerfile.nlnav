@@ -1,0 +1,23 @@
+# m20_nlnav:latest = the stack image + PyTorch (CUDA) + the OWLv2 open-vocabulary model.
+# Runs on the laptop that rides along with the robot (x86_64 + NVIDIA GPU), never on the robot's ARM hosts.
+# Used by: the natural-language navigation node (text encoder), the mapping-tour keyframe recorder and the
+# object-map builder (tools/semmap), and the Ollama-free parts of tools/nlnav/nlnav_up.sh.
+FROM m20_autonomy:latest
+
+# cv2 (the keyframe recorder, the object-map builder, the fisheye camera node) and sensor_msgs_py (the lidar depth node)
+RUN apt-get update && apt-get install -y --no-install-recommends python3-opencv ros-humble-sensor-msgs-py \n    && rm -rf /var/lib/apt/lists/*
+
+# CUDA 12.8 wheels are the first with Blackwell (sm_120, RTX 50xx) kernels; they also run on 8.6/8.9 GPUs.
+# numpy<2 keeps ROS Humble's system Python packages (cv2, tf transformations) importable.
+RUN pip install --no-cache-dir "numpy<2" \
+    && pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cu128 \
+    && pip install --no-cache-dir pyyaml scipy "numpy<2"
+
+# OWLv2 (HF transformers): the object-map detector and the nlnav text encoder. pillow>=10 because Ubuntu's
+# 9.0 lacks Image.Resampling (transformers' image processors fail to import). Weights baked in (~600 MB) so the
+# containers run with HF_HUB_OFFLINE=1 and need no network at the site.
+ENV HF_HOME=/opt/hf
+RUN printf "numpy<2\n" > /tmp/constraints.txt \
+    && pip install --no-cache-dir -c /tmp/constraints.txt "transformers>=4.45,<5" "pillow>=10" \
+    && python3 -c "from transformers import Owlv2Processor, Owlv2ForObjectDetection as M; \
+m='google/owlv2-base-patch16-ensemble'; Owlv2Processor.from_pretrained(m); M.from_pretrained(m); print('OWLv2 weights cached')"

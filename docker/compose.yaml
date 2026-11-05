@@ -1,0 +1,94 @@
+# One service per node group; shared host network for DDS discovery.
+# Restart policy + ROS-aware healthchecks = container-level watchdog layer.
+# systemd unit in deploy/ supervises this whole stack (host-level layer).
+x-stack: &stack
+  image: m20_autonomy:latest
+  build:
+    context: ..
+    dockerfile: docker/Dockerfile
+  network_mode: host
+  ipc: host
+  restart: unless-stopped
+
+x-healthcheck: &hc
+  # Must source ROS (rclpy/m20_msgs live in the overlay); CMD bypasses the entrypoint.
+  # Wrap in bash -c: /bin/sh is dash (no `source`), and ROS setup.bash needs bash.
+  test: ["CMD-SHELL", "bash -c 'source /opt/ros/humble/setup.bash && source /ws/install/setup.bash && python3 /healthcheck.py'"]
+  interval: 10s
+  timeout: 6s
+  retries: 3
+  start_period: 20s
+
+services:
+  # RMW: CycloneDDS everywhere (2026-07-19). History: WSL2 localhost multicast
+  # broke FastDDS discovery per participant-pair; a FastDDS discovery server fixed
+  # that but failed under participant churn (ghost registrations -> blind loggers,
+  # 2x phantom SUCCEEDED). CycloneDDS is the robust single-host choice. The old
+  # discovery service is kept below (commented) for emergency rollback.
+  # discovery:
+  #   <<: *stack
+  #   command: fastdds discovery -i 0 -l 127.0.0.1 -p 11811
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pgrep -f 'fastdds discovery' >/dev/null || exit 1"]
+  #     interval: 15s
+  #     timeout: 3s
+  #     retries: 3
+
+  commander:
+    <<: *stack
+    command: ros2 run m20_commander commander_node
+    environment:
+      - "ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-42}"
+      - "RMW_IMPLEMENTATION=rmw_cyclonedds_cpp"
+      - "HEALTH_NODE=m20_commander"
+    healthcheck: *hc
+
+  locomotion_bridge:
+    # The only process that talks to the robot: UDP inspection protocol to M20_ROBOT_IP:30000 (src/m20_locomotion_bridge).
+    # M20_VENDOR_NAV=true serves /navigate_to_pose with the robot's own navigation (stage A, no Nav2).
+    # The speed table defaults are the measured 2026-09-29 numbers; override after tools/robot/m20_probe.py drive.
+    <<: *stack
+    command: >
+      ros2 run m20_locomotion_bridge bridge_node --ros-args
+      -p sdk_backend:=m20_udp -p robot_ip:=${M20_ROBOT_IP:-10.21.31.103} -p vendor_nav:=${M20_VENDOR_NAV:-true}
+      -p vx_max:=${M20_VX_MAX:-2.1} -p vy_max:=${M20_VY_MAX:-0.62} -p wz_max:=${M20_WZ_MAX:-1.8}
+      -p publish_map_tf:=${M20_PUBLISH_MAP_TF:-true}
+    environment:
+      - "ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-42}"
+      - "RMW_IMPLEMENTATION=rmw_cyclonedds_cpp"
+      - "HEALTH_NODE=m20_locomotion_bridge"
+    healthcheck: *hc
+
+  behavior_engine:
+    <<: *stack
+    command: ros2 run m20_behaviors behavior_engine
+    environment:
+      - "ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-42}"
+      - "RMW_IMPLEMENTATION=rmw_cyclonedds_cpp"
+      - "HEALTH_NODE=m20_behavior_engine"
+    healthcheck: *hc
+
+  mission_server:
+    <<: *stack
+    command: ros2 run m20_missions mission_server
+    environment:
+      - "ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-42}"
+      - "RMW_IMPLEMENTATION=rmw_cyclonedds_cpp"
+      - "HEALTH_NODE=m20_mission_server"
+    healthcheck: *hc
+
+  # NL navigation runs in the m20_nlnav image (torch + OWLv2) on the laptop GPU: tools/nlnav/nlnav_up.sh.
+
+  station_bridge:
+    <<: *stack
+    # ROS 2 launch args use name:=value; only pass robot_id when set (empty = single robot, ADR-014).
+    # $$ escapes compose substitution so the container shell expands ROBOT_ID at runtime.
+    command: 'bash -c "ros2 launch m20_station station_bridge.launch.py $${ROBOT_ID:+robot_id:=$$ROBOT_ID}"'
+    environment:
+      - "ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-42}"
+      - "RMW_IMPLEMENTATION=rmw_cyclonedds_cpp"
+      - "ROBOT_ID=${ROBOT_ID:-}"
+    # no ROS healthcheck: bridges don't publish HealthReport; process-level restart suffices
+
+  # The navigation layer (map_server, Nav2, pointcloud_to_laserscan, the lidar driver) is started into the
+  # commander container by tools/robot/robot_up.sh, which also arms the robot and verifies /m20/mode.

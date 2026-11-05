@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+reports/
+
+# colcon workspaces built on the host
+build/
+install/
+log/
+
+# never committed: working notes, editor and assistant session files
+notes/
+*.code-workspace
+.claude/
+.vscode/
+
+# recorded data: keyframes, maps and object maps live under ~/m20_sim, not in the repository
+*.mp4
+*.mkv
+*.npy
+*.pcd
