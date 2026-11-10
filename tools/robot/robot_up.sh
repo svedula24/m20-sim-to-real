@@ -50,13 +50,14 @@ echo "[1/6] compose services (commander, locomotion bridge -> robot, mission ser
 M20_VENDOR_NAV=$([ "$NAV" = vendor ] && echo true || echo false) \
   docker compose "${COMPOSE[@]}" up -d commander locomotion_bridge mission_server station_bridge
 bash "$REPO/tools/dev/container_deps.sh"
+# "M20 answering" = the robot answered within connect()'s 5 s; "robot answering" = it came later and the bridge's
+# heartbeat accepted it (connected is re-checked every second since 2026-11-09). Either is a live robot.
 for _ in $(seq 1 30); do
-  docker logs docker-locomotion_bridge-1 2>&1 | grep -qa "M20 answering" && break
-  docker logs docker-locomotion_bridge-1 2>&1 | grep -qa "no status from the M20" && { echo "ERROR: the bridge cannot reach the robot:"; docker logs --tail 5 docker-locomotion_bridge-1; exit 1; }
+  docker logs docker-locomotion_bridge-1 2>&1 | grep -qaE "M20 answering|robot answering" && break
   sleep 1
 done
-docker logs docker-locomotion_bridge-1 2>&1 | grep -qa "M20 answering" || { echo "ERROR: bridge did not report the robot in 30 s: docker logs docker-locomotion_bridge-1"; exit 1; }
-echo "  $(docker logs docker-locomotion_bridge-1 2>&1 | grep -a 'M20 answering' | tail -1)"
+docker logs docker-locomotion_bridge-1 2>&1 | grep -qaE "M20 answering|robot answering" || { echo "ERROR: no status from the robot in 30 s (wire? robot on? another UDP client holding the pushes?): docker logs docker-locomotion_bridge-1"; exit 1; }
+echo "  $(docker logs docker-locomotion_bridge-1 2>&1 | grep -aE 'M20 answering|robot answering' | tail -1)"
 
 echo "[2/6] staging config into $C:/cfg"
 docker exec "$C" bash -lc "mkdir -p /cfg/out /cfg/maps && rm -f /cfg/maps/site.*"
