@@ -120,3 +120,11 @@ def test_map_correction_reproduces_the_vendor_pose():
     moved = p.compose(odom_base, (1.0, 0.0, 0.0))
     mx, my, _ = c.map_pose(moved)
     assert math.hypot(mx - map_base[0], my - map_base[1]) == pytest.approx(1.0)
+
+
+def test_parse_basic_tolerates_a_sender_without_gait_or_usage_mode():
+    # the protocol emulator sends only MotionState / Charge / HES / ControlUsageMode; a bare MotionState is enough
+    b = p.parse_basic({"BasicStatus": {"MotionState": 17, "Charge": 0, "HES": 0, "ControlUsageMode": 0}})
+    assert (b.motion_state, b.gait, b.charge, b.hard_estop, b.usage_mode) == (17, 0, 0, False, 0)
+    b = p.parse_basic({"BasicStatus": {"MotionState": 4}})
+    assert (b.motion_state, b.gait, b.usage_mode) == (4, 0, 0)

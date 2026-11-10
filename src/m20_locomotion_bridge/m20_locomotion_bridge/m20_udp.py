@@ -171,9 +171,12 @@ class BasicStatus:
 
 
 def parse_basic(items: dict) -> BasicStatus:
+    """MotionState is the one field every consumer needs; the rest default when absent. The vendor guide lists
+    Gait in BasicStatus (1.3.1.1), but not every sender has it: BrightAI's protocol emulator omits it, and their
+    own bridge reads it with .get too (first run against the emulator, 2026-11-05: KeyError 'Gait')."""
     b = items["BasicStatus"]
-    return BasicStatus(int(b["MotionState"]), int(b["Gait"]), int(b.get("Charge", 0)),
-                       bool(int(b.get("HES", 0))), int(b["ControlUsageMode"]))
+    return BasicStatus(int(b["MotionState"]), int(b.get("Gait", 0)), int(b.get("Charge", 0)),
+                       bool(int(b.get("HES", 0))), int(b.get("ControlUsageMode", 0)))
 
 
 @dataclass

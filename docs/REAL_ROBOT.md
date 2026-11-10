@@ -135,3 +135,37 @@ table (step 2), whether the robot drops to Regular mode on its own in a way that
   and a Fast DDS RMW instead of the stack's Cyclone. UDP needs nothing on the robot.
 - AMCL on the real robot: the robot's own localization is better than what AMCL would do on a laser scan from
   two hemispherical lidars; keep it as the fallback only if the vendor pose proves unreliable (step 3).
+
+## 5. Rehearsal off the robot: the ladder against BrightAI's protocol emulator (2026-11-05)
+
+Before the first wire-up, steps 0 to 4 and the language layer of step 7 were run against the `basic_server`
+emulator that BrightAI keeps in its private repository (`sim/m20_sim_server`, kinematic body, run on this laptop
+at 127.0.0.1:30000; nothing here touched a robot). `M20_ROBOT_IP=127.0.0.1` points the stack at it; the blank
+`maps/emulator.{pgm,yaml}` (20 x 20 m, no walls) stands in for a site map.
+
+| Step | Result on the emulator | Number |
+|---|---|---|
+| 0 | PASS | state Sit, `loc=ok`, battery 94 %, usage mode 1 at start |
+| 1 | PASS | `stand` reached RL Control (17) at once; `sit` back to 4 |
+| 2 | PASS | `drive 0.2 0 0 3`: pose moved 1.27 m -> vx 2.12 m/s at ratio 1.0 (the emulator's table says 2.1); `drive 0 0 0.2 3`: turned 62.5 deg -> wz 1.82 rad/s (table 1.8) |
+| 3 | PASS | bridge "M20 answering"; `/odom` 10.0 Hz and `/m20/vendor_pose` 10.2 Hz, both at the emulator's pose |
+| 4 | PASS | armed ASSISTED verified on `/m20/mode`; `m20 goto 2 0` -> vendor nav task, "arrived, 0.00 m from the goal" |
+| 5, 6 | not possible | the emulator has no cameras; the offline circuit4 object map stood in for step 7 |
+| 7 | PASS (language layer) | `m20 say "go to the ladder"`: ladder #28 (match 0.88, four alternatives listed), approach pose (-1.52, -9.23), vendor nav arrived; NL node warm-up 49 s with qwen2.5:7b |
+
+What the rehearsal changed (each a mismatch the robot would also have shown, or a gap the emulator exposed):
+
+- `parse_basic` no longer requires `Gait` and `ControlUsageMode`: the emulator omits `Gait`, and the vendor guide
+  lists it but BrightAI's own bridge reads it with a default too. First `status` died on `KeyError: 'Gait'`.
+- `m20_probe.py drive` runs without the 1002/4 MotionStatus report (the emulator does not model it): the distance
+  then comes from the vendor pose alone; it also prints a `wz_max` estimate for the yaw run.
+- The image installs `ros-humble-rmw-cyclonedds-cpp` explicitly: compose selects Cyclone and the fresh image did
+  not have it (every container restart-looped).
+- The bridge publishes `/odom`, `/m20/vendor_pose` and an identity `map -> odom` from LocationStatus when
+  MotionStatus is absent, with one warning; with MotionStatus present (the robot) nothing changed. Without this the
+  whole stack looked dead against the emulator (0 Hz everywhere).
+- `tools/dev/m20 status` reads the latched topics with rclpy: the `ros2` CLI daemon wedges in the commander
+  container and printed "(no mode published)" while the mode was there.
+
+Still unanswered, for the robot: the real speed table (step 2), whether `MotionStatus` arrives at the rate the
+dead reckoning assumes (step 3), the camera path (step 5) and the object map from sparse lidar depth (step 6).

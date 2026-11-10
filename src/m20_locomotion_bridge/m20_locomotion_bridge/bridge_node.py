@@ -79,6 +79,7 @@ class M20UdpSDK:
         stream_hz = float(g("stream_hz", 20.0))
         self._target = (0.0, 0.0, 0.0)
         self._streaming = False               # True between the first send_velocity and stop()
+        self._no_motion_warned = False        # the no-MotionStatus fallback is logged once
         self._zeros_until = 0.0               # keep sending zero frames for 1 s after a stop
         self._lock = threading.Lock()
         self.navigating = False               # vendor navigation owns the robot: axis commands are refused
@@ -184,22 +185,37 @@ class M20UdpSDK:
         if d is not None:
             self.battery = proto.parse_battery(d)
         m = self.link.latest(proto.STATUS_MOTION, 1.0)
+        loc = self.link.latest(proto.STATUS_NAV, 3.0)
         if m is None:
+            # No MotionStatus (1002/4): the robot always sends it; BrightAI's protocol emulator does not model it
+            # (first run against it, 2026-11-05: nothing was published and the stack looked dead). Then the vendor
+            # pose IS the odometry: odom == map, the twist is what we are commanding. Unchanged path on the robot.
+            if loc is None:
+                return
+            self.location = proto.parse_location(loc)
+            if not self.location.ok:
+                return
+            if not self._no_motion_warned:
+                self.node.get_logger().warn("no MotionStatus (1002/4) from this sender: /odom follows the vendor pose, "
+                                            "map->odom is identity (an emulator, not the robot?)")
+                self._no_motion_warned = True
+            pose = (self.location.x, self.location.y, self.location.yaw)
+            with self._lock:
+                vx, vy, wz = self._target if self._streaming else (0.0, 0.0, 0.0)
+            ms = proto.MotionStatus(vx, vy, wz, 0.0, 0.0, self.location.yaw, 0.0)
+            self._publish_vendor_pose(now)
+            self._publish_odom(now, pose, ms)
+            if self.publish_map_tf:
+                self.tf.sendTransform(self._tf(now, "map", "odom", (0.0, 0.0, 0.0)))
             return
         ms = proto.parse_motion(m)
         t = time.monotonic()
         odom_base = self.reckoner.step(ms, t)
-        loc = self.link.latest(proto.STATUS_NAV, 3.0)
         if loc is not None:
             self.location = proto.parse_location(loc)
             if self.location.ok:
                 self.correction.update((self.location.x, self.location.y, self.location.yaw), odom_base)
-                ps = self._PoseStamped()
-                ps.header.stamp = now.to_msg()
-                ps.header.frame_id = "map"
-                ps.pose.position.x, ps.pose.position.y = self.location.x, self.location.y
-                ps.pose.orientation.z, ps.pose.orientation.w = math.sin(self.location.yaw / 2), math.cos(self.location.yaw / 2)
-                self.pose_pub.publish(ps)
+                self._publish_vendor_pose(now)
         self._publish_odom(now, odom_base, ms)
         if self.publish_map_tf and self.correction.valid:
             self.tf.sendTransform(self._tf(now, "map", "odom", self.correction.map_odom))
@@ -209,6 +225,14 @@ class M20UdpSDK:
             imu.data.roll, imu.data.pitch, imu.data.yaw = ms.roll, ms.pitch, ms.yaw
             imu.data.omega_z = ms.wz
             self._imu_pub.publish(imu)
+
+    def _publish_vendor_pose(self, now):
+        ps = self._PoseStamped()
+        ps.header.stamp = now.to_msg()
+        ps.header.frame_id = "map"
+        ps.pose.position.x, ps.pose.position.y = self.location.x, self.location.y
+        ps.pose.orientation.z, ps.pose.orientation.w = math.sin(self.location.yaw / 2), math.cos(self.location.yaw / 2)
+        self.pose_pub.publish(ps)
 
     def _tf(self, now, parent, child, pose):
         t = self._TransformStamped()
