@@ -66,6 +66,14 @@ jobs:
           name: unit-test-report
           path: reports/unit.xml
 
+  shared:
+    # tools/ci/shared_files.txt: files that must stay byte-identical to the sim repo's (ROS2_Nav2_Mako), so the robot
+    # drives on the Nav2 settings, lidar stage, localization adapter and eval the sim was measured with
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - run: bash tools/ci/shared_files_check.sh
+
   build-and-test:
     needs: [static, unit]
     runs-on: ubuntu-24.04

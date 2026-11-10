@@ -57,7 +57,9 @@ opens them (an OTA update reverts it). A Humble node then sees `/IMU` (sensor_ms
 never leaves NOS. The raw lidar packets do: enable `multicast-relay.service` on NOS and run `rslidar_sdk` on
 the external computer (host address = its own IP, host clock stamps), which gives `/rslidar_points_front` and
 `/rslidar_points_rear` at 10 Hz in frames `rslidar_front` / `rslidar_rear`. **Measured** mounts from floor
-fits: front (+0.32028, 0, -0.013), rear (-0.32028, 0, -0.013), both pitched -90 degrees, rear yawed 180.
+fits: front (+0.32028, 0, -0.013), rear (-0.32028, 0, -0.013), both pitched -90 degrees, the FRONT yawed 180 and the
+rear not (the robot's own driver config; `tools/nav/lidar_stage.sh --tf` publishes exactly these). An earlier version of this
+sentence had the yaw on the rear: wrong.
 
 **Cameras.** Two vendor fisheye cameras, H.265 RTSP from AOS (`rtsp://10.21.31.103:8554/video1` and
 `/video2`, 800x600, about 30 fps; the numbering follows power-up order). Calibrated as Kannala-Brandt
