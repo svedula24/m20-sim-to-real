@@ -9,6 +9,8 @@
 #   --object-map ~/m20_sim/semmap/<site>/object_map.json --scene maps/<site>.scene.yaml
 #                                                                        also start NL navigation (tools/nlnav)
 #   --no-arm      bring everything up but leave the commander disarmed (bench checks)
+#   --armdog      on the robot's computer: docker/compose.armdog.yaml on top (no auto-restart of a crashed service);
+#                 start the lidar container first (tools/lidar/lidar_up.sh --start)
 #   then:  tools/dev/m20 mission --route tools/missions/<route>.yaml     tools/dev/m20 say "go to the ladder"     tools/dev/m20 status
 #
 # The map is the robot's own: copy /var/opt/robot/data/maps/<name>/occ_grid.{pgm,yaml} from the navigation host
@@ -22,12 +24,14 @@ DOM="${ROS_DOMAIN_ID:-42}"
 SRC="source /opt/ros/humble/setup.bash; source /ws/install/setup.bash; export ROS_DOMAIN_ID=$DOM RMW_IMPLEMENTATION=rmw_cyclonedds_cpp"
 NAV="${M20_NAV:-nav2}"            # nav2 (default since 2026-11-09, the measured walk) or vendor (the robot's own navigation)
 MAP=""; OBJECT_MAP=""; SCENE=""; ARM=1
+COMPOSE=(-f "$REPO/docker/compose.yaml")
 while [ $# -gt 0 ]; do
   case "$1" in
     --map) MAP="$2"; shift ;;
     --object-map) OBJECT_MAP="$2"; shift ;;
     --scene) SCENE="$2"; shift ;;
     --no-arm) ARM=0 ;;
+    --armdog) COMPOSE+=(-f "$REPO/docker/compose.armdog.yaml") ;;   # on the robot's computer: no auto-restart of a crashed service
     *) echo "unknown option $1"; exit 2 ;;
   esac
   shift
@@ -44,7 +48,7 @@ trap cleanup EXIT INT TERM
 
 echo "[1/6] compose services (commander, locomotion bridge -> robot, mission server, station)"
 M20_VENDOR_NAV=$([ "$NAV" = vendor ] && echo true || echo false) \
-  docker compose -f "$REPO/docker/compose.yaml" up -d commander locomotion_bridge mission_server station_bridge
+  docker compose "${COMPOSE[@]}" up -d commander locomotion_bridge mission_server station_bridge
 bash "$REPO/tools/dev/container_deps.sh"
 for _ in $(seq 1 30); do
   docker logs docker-locomotion_bridge-1 2>&1 | grep -qa "M20 answering" && break
@@ -73,13 +77,18 @@ docker exec -d "$C" bash -lc "$SRC; python3 /cfg/map_tf_adapter.py >/cfg/out/map
 
 if [ "$NAV" = nav2 ]; then
   echo "[4/6] Nav2 on the vendor map; lidar: RoboSense Airy x2 via rslidar_sdk -> /scan_front + /scan_rear"
-  # The lidar stage (two scan converters + the mount TFs, --tf) is the same script the sim runs; the mounts are the
-  # robot's own driver config: both units pitched -90 deg, the FRONT yawed 180, the rear not. Then --check reads both
-  # clouds and both scans with rclpy (the ros2 CLI daemon wedges in this container) and fails the launch if either
-  # is missing: Nav2 with one lidar would drive half blind.
-  bash "$REPO/tools/nav/lidar_stage.sh" "$C" --tf
-  sleep 3
-  bash "$REPO/tools/nav/lidar_stage.sh" "$C" --check || { echo "ERROR: lidar stage incomplete (rslidar_sdk running? NOS multicast relay enabled? tools/lidar)"; exit 1; }
+  # The lidar stage (driver + two scan converters + the mount TFs) normally runs in its own container, m20_lidar
+  # (tools/lidar/lidar_up.sh --start, on armdog), so only the scans cross to this one. Without it (a laptop with
+  # rslidar_sdk on the host) the converters and TFs start here, the way the sim does it (same shared script; the
+  # mounts are the robot's own driver config: both units pitched -90 deg, the FRONT yawed 180, the rear not).
+  if docker ps --format '{{.Names}}' | grep -qx m20_lidar; then
+    echo "  lidar stage: m20_lidar container (tools/lidar/lidar_up.sh)"
+  else
+    bash "$REPO/tools/nav/lidar_stage.sh" "$C" --tf
+    sleep 3
+  fi
+  # both scans must reach THIS container (rclpy, not the CLI daemon); Nav2 with one lidar would drive half blind
+  bash "$REPO/tools/nav/lidar_stage.sh" "$C" --check-scans || { echo "ERROR: /scan_front and /scan_rear not both arriving (tools/lidar/lidar_up.sh --check, --start; NOS multicast relay on?)"; exit 1; }
   # Nav2 settings: the robot_shape profile the sim walk was measured with (footprint 0.90 x 0.60 m, 0.3 m/s,
   # min speeds above the robot's dead zones), the static site map, the two scans. M20_MAX_VEL raises the cap later.
   docker exec "$C" python3 /cfg/nav2_profile.py /cfg/nav2_params.yaml --profile robot_shape --max-vel "${M20_MAX_VEL:-0.3}" \

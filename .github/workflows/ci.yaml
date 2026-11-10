@@ -89,6 +89,14 @@ jobs:
           load: true
           cache-from: type=gha,scope=m20_autonomy
           cache-to: type=gha,scope=m20_autonomy,mode=max
+      - name: Build the lidar stage image (rslidar_sdk at the robot's pins; no test, it needs the lidars)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: docker/Dockerfile.rslidar
+          tags: m20_lidar:ci
+          cache-from: type=gha,scope=m20_lidar
+          cache-to: type=gha,scope=m20_lidar,mode=max
       - name: colcon test (inside the image)
         run: |
           mkdir -p reports
