@@ -1,0 +1,25 @@
+# The Dog1 waypoint walk, measured the way the sim rehearsal was (tools/nlnav_eval/cases_waypoints.yaml in
+# ROS2_Nav2_Mako): the same runner and judge, so compare.py prints sim and robot side by side.
+#   bash tools/nlnav_eval/eval.sh --robot --cases tools/nlnav_eval/cases_walk_dog1.yaml --tag dog1_walk
+# --robot: "truth" is the robot's own position report (/m20/vendor_pose), the best reference on the robot, so the
+# localization numbers here read as the adapter's lag, not a map error, and there is no sim to reset: the operator
+# places the robot at start_pose (by the robot's report) before each case. Dan's OK per case; a hand on the pendant.
+# Routes: tools/missions/dock_2m.yaml and dock_loop.yaml are written on site once maps/<site>.yaml is imported
+# (tools/robot/import_vendor_map.sh) and checked with tools/missions/plot_route.py; this file refuses to run without them.
+# Bars: true arrival 0.55 m (Nav2's 0.45 m tolerance on its believed pose + 0.10 m localization), closest scan
+# return >= 0.35 m, map->odom step <= 0.10 m (the old bridge's stutter was 0.15 m per report at 0.3 m/s), roll-out
+# after a mid-leg cancel <= 0.5 m then still. Same numbers as the sim.
+kind: waypoints
+site: dog1
+start_pose: [0.0, 0.0, 0.0]          # filled in on site: the robot's reported pose at the taped start mark
+
+cases:
+  - name: wp_2m
+    route: missions/dock_2m.yaml
+    expect: {status: done, leg_tol_m: 0.55, min_scan_m: 0.35, max_map_odom_step_m: 0.10}
+  - name: wp_3_route
+    route: missions/dock_loop.yaml
+    expect: {status: done, leg_tol_m: 0.55, min_scan_m: 0.35, max_map_odom_step_m: 0.10}
+  - name: wp_cancel_midleg
+    route: missions/dock_loop.yaml
+    expect: {status: canceled, cancel_after_s: 6, max_rollout_m: 0.5}

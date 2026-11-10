@@ -97,8 +97,13 @@ def cmd_drive(link, a):
     if max(abs(rx), abs(ry), abs(rz)) > 0.3 and not a.unsafe:
         print("refusing ratios above 0.3 without --unsafe (0.3 in X is ~0.6 m/s on a stock M20)")
         return 2
-    if not wait_for(link, p.STATUS_MOTION, 5.0, "motion status"):
+    if not wait_for(link, p.STATUS_BASIC, 5.0, "basic status"):
         return 1
+    # 1002/4 MotionStatus is what the robot sends; a sender without it (BrightAI's protocol emulator does not model
+    # it) still gets driven: the integral is then 0 and the vendor pose delta below is the only distance
+    has_motion = link.latest(p.STATUS_MOTION, 3.0) is not None
+    if not has_motion:
+        print("note: no MotionStatus (1002/4) from this sender; distance comes from the vendor pose only")
     b = p.parse_basic(link.latest(p.STATUS_BASIC, 3.0) or {"BasicStatus": {"MotionState": -1, "Gait": 0, "ControlUsageMode": -1}})
     if b.motion_state != p.MS_RL_CONTROL or b.usage_mode != p.MODE_REGULAR:
         print(f"refusing: robot must be in RL Control (17) and Regular mode (0); it is state={b.motion_state} mode={b.usage_mode}")
@@ -125,7 +130,8 @@ def cmd_drive(link, a):
         time.sleep(0.05)
     time.sleep(1.5)
     print("after: ", snapshot(link))
-    print(f"integrated LinearX (bias {bias:+.3f} removed): {dist:.2f} m over {a.secs:.1f} s at ratio {rx:+.2f}")
+    if has_motion:
+        print(f"integrated LinearX (bias {bias:+.3f} removed): {dist:.2f} m over {a.secs:.1f} s at ratio {rx:+.2f}")
     loc1 = link.latest(p.STATUS_NAV, 3.0)
     if loc0 and loc1:
         l0, l1 = p.parse_location(loc0), p.parse_location(loc1)
@@ -133,6 +139,9 @@ def cmd_drive(link, a):
         print(f"vendor pose moved {d:.2f} m, turned {math.degrees(p.wrap(l1.yaw - l0.yaw)):+.1f} deg")
         if rx and d:
             print(f"=> vx_max estimate {d / a.secs / abs(rx):.2f} m/s at ratio 1.0 (tape-measure the floor to confirm)")
+        turned = p.wrap(l1.yaw - l0.yaw)
+        if rz and turned:
+            print(f"=> wz_max estimate {abs(turned) / a.secs / abs(rz):.2f} rad/s at ratio 1.0 (protractor to confirm)")
     return 0
 
 

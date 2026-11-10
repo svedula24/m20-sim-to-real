@@ -1,8 +1,9 @@
 """Deep Robotics Lynx M20 inspection protocol over UDP: the only transport this stack uses to move the robot.
 
-Pure Python (no ROS): framing, the message set we use, the measured ratio-to-speed table, dead reckoning from the
-robot's reported body velocity, and the map<-odom correction from the robot's own localization. Everything here
-has unit tests (tests/test_m20_udp.py); the socket class is the one piece exercised only on the robot.
+Pure Python (no ROS): framing, the message set we use, the measured ratio-to-speed table, and dead reckoning from
+the robot's reported body velocity (the map->odom correction from the robot's own localization lives in
+tools/nav/map_tf_adapter.py, shared with the sim repo). Everything here has unit tests (tests/test_m20_udp.py); the
+socket class is exercised with a fake socket there and for real only on the robot.
 
 Facts, from the vendor's Software Development Guide (V1.2.1 / the 2025-08 beta) and from runs on a real M20
 (firmware 1.2.0.1), see docs/REAL_ROBOT.md:
@@ -22,6 +23,7 @@ Facts, from the vendor's Software Development Guide (V1.2.1 / the 2025-08 beta) 
 from __future__ import annotations
 
 import json
+import logging
 import math
 import socket
 import struct
@@ -171,9 +173,12 @@ class BasicStatus:
 
 
 def parse_basic(items: dict) -> BasicStatus:
+    """MotionState is the one field every consumer needs; the rest default when absent. The vendor guide lists
+    Gait in BasicStatus (1.3.1.1), but not every sender has it: BrightAI's protocol emulator omits it, and their
+    own bridge reads it with .get too (first run against the emulator, 2026-11-05: KeyError 'Gait')."""
     b = items["BasicStatus"]
-    return BasicStatus(int(b["MotionState"]), int(b["Gait"]), int(b.get("Charge", 0)),
-                       bool(int(b.get("HES", 0))), int(b["ControlUsageMode"]))
+    return BasicStatus(int(b["MotionState"]), int(b.get("Gait", 0)), int(b.get("Charge", 0)),
+                       bool(int(b.get("HES", 0))), int(b.get("ControlUsageMode", 0)))
 
 
 @dataclass
@@ -236,20 +241,6 @@ def wrap(a: float) -> float:
     return (a + math.pi) % (2 * math.pi) - math.pi
 
 
-def compose(a: Pose2, b: Pose2) -> Pose2:
-    """a ∘ b: b expressed in a's frame -> b in the frame a is expressed in."""
-    ax, ay, at = a
-    bx, by, bt = b
-    c, s = math.cos(at), math.sin(at)
-    return ax + c * bx - s * by, ay + s * bx + c * by, wrap(at + bt)
-
-
-def invert(a: Pose2) -> Pose2:
-    ax, ay, at = a
-    c, s = math.cos(at), math.sin(at)
-    return -(c * ax + s * ay), -(-s * ax + c * ay), wrap(-at)
-
-
 class DeadReckoner:
     """odom -> base_link from the robot's reported body velocity and attitude yaw.
 
@@ -286,32 +277,17 @@ class DeadReckoner:
         return self.pose
 
 
-class MapCorrection:
-    """map -> odom, the transform AMCL would publish, from the robot's own localization (1002/7, ~2 Hz).
-
-    Nav2 needs a continuous odom -> base_link (the dead reckoner, 10 Hz) and a slowly varying map -> odom. At each
-    location sample: T_map_odom = T_map_base ∘ inv(T_odom_base). Between samples the dead reckoner carries the
-    pose; its error over 0.5 s at a 0.05 m/s bias is below 3 cm.
-    """
-
-    def __init__(self):
-        self.map_odom: Pose2 = (0.0, 0.0, 0.0)
-        self.valid = False
-
-    def update(self, map_base: Pose2, odom_base: Pose2) -> Pose2:
-        self.map_odom = compose(map_base, invert(odom_base))
-        self.valid = True
-        return self.map_odom
-
-    def map_pose(self, odom_base: Pose2) -> Pose2:
-        return compose(self.map_odom, odom_base)
-
-
 # --------------------------------------------------------------------------------------------- socket
 @dataclass
 class _Entry:
-    t: float
+    t: float            # time.monotonic() when the frame was received
     items: dict
+
+
+def _make_socket() -> socket.socket:
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.settimeout(0.5)
+    return s
 
 
 class Link:
@@ -320,12 +296,17 @@ class Link:
     Exactly one Link per robot: a second socket from the same host displaced the first (E006 / lost pushes).
     `latest(code, max_age)` returns the newest Items for a status code, or None if older than max_age seconds:
     a stale status must never be mistaken for a live one (the heartbeat deadline is ~1 s; a missed one stops the
-    pushes silently).
+    pushes silently). `latest_entry` also gives the receive time, so a consumer can tell a NEW push from the cached
+    one (the location report arrives ~2 Hz and is read at 10 Hz).
+
+    A socket error (interface down, ICMP unreachable surfacing as OSError) reopens the socket and carries on;
+    before 2026-11-09 both threads exited on the first one, silently, and the bridge was deaf until restarted.
     """
 
-    def __init__(self, ip: str = ROBOT_IP, port: int = ROBOT_PORT, heartbeat_hz: float = 2.0):
+    def __init__(self, ip: str = ROBOT_IP, port: int = ROBOT_PORT, heartbeat_hz: float = 2.0, sock_factory=_make_socket):
         self.addr = (ip, port)
         self.heartbeat_period = 1.0 / heartbeat_hz
+        self._make_socket = sock_factory
         self._sock: Optional[socket.socket] = None
         self._id = 0
         self._lock = threading.Lock()
@@ -335,11 +316,11 @@ class Link:
         self._threads = []
         self.rx_frames = 0
         self.rx_errors = 0
+        self.reopens = 0
 
     # lifecycle
     def start(self) -> None:
-        self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self._sock.settimeout(0.5)
+        self._sock = self._make_socket()
         self._stop.clear()
         self._threads = [threading.Thread(target=self._rx_loop, name="m20_rx", daemon=True),
                          threading.Thread(target=self._hb_loop, name="m20_hb", daemon=True)]
@@ -366,12 +347,16 @@ class Link:
         return self.send(*msg)
 
     # receiving
-    def latest(self, code: Tuple[int, int], max_age: float = 2.0) -> Optional[dict]:
+    def latest_entry(self, code: Tuple[int, int], max_age: float = 2.0) -> Optional[_Entry]:
         with self._lock:
             e = self._cache.get(code)
         if e is None or time.monotonic() - e.t > max_age:
             return None
-        return e.items
+        return e
+
+    def latest(self, code: Tuple[int, int], max_age: float = 2.0) -> Optional[dict]:
+        e = self.latest_entry(code, max_age)
+        return None if e is None else e.items
 
     def last_ack(self, code: Tuple[int, int], max_age: float = 2.0) -> Optional[dict]:
         with self._lock:
@@ -380,14 +365,29 @@ class Link:
             return None
         return e.items
 
+    def _reopen(self, where: str, err: OSError) -> None:
+        with self._lock:
+            self.reopens += 1
+            n = self.reopens
+            try:
+                self._sock.close()
+            except OSError:
+                pass
+            self._sock = self._make_socket()
+        logging.getLogger("m20_udp").warning("m20 link %s: %s; socket reopened (#%d)", where, err, n)
+        self._stop.wait(0.2)
+
     def _rx_loop(self) -> None:
         while not self._stop.is_set():
             try:
                 data, _ = self._sock.recvfrom(1 << 16)
             except socket.timeout:
                 continue
-            except OSError:
-                break
+            except OSError as e:
+                if self._stop.is_set():
+                    break
+                self._reopen("rx", e)
+                continue
             try:
                 _, code, items = decode(data)
             except (ValueError, KeyError, json.JSONDecodeError):
@@ -404,6 +404,8 @@ class Link:
                 self.send(HEARTBEAT)
                 for code in POLLS:                   # the 1 Hz pushes are re-polled with every heartbeat
                     self.send(code)
-            except OSError:
-                break
+            except OSError as e:
+                if self._stop.is_set():
+                    break
+                self._reopen("hb", e)
             self._stop.wait(self.heartbeat_period)

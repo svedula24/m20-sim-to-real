@@ -6,8 +6,14 @@ as they did in simulation):
   subscribes  /m20/gait_request   (m20_msgs/GaitRequest)   stand / sit / "wheeled" = the velocity controller
   subscribes  /m20/mode           (m20_msgs/RobotMode)     commands are forwarded only while armed
   publishes   /odom + TF odom->base_link                   dead-reckoned from the robot's reported body velocity
-  publishes   TF map->odom                                 from the robot's own localization (like AMCL would)
-  publishes   /m20/vendor_pose    (geometry_msgs/PoseStamped, map)  the raw vendor localization, for checks
+  publishes   /m20/vendor_pose    (geometry_msgs/PoseStamped, map)  the robot's own localization, ONE message per
+                                                           new report, stamped at the report's receive time
+                                                           (minus vendor_pose_delay_s). map->odom is published from
+                                                           it by tools/nav/map_tf_adapter.py, the same file the sim
+                                                           rehearsed with; the bridge publishes no map->odom since
+                                                           2026-11-09 (it recomputed the correction 10 x/s from a
+                                                           report that changed 2 x/s: the map pose stood still, then
+                                                           jumped 0.15 m per report at 0.3 m/s)
   publishes   /IMU_DATA           (drdds/ImuData)          roll/pitch/omega_z for the commander's tip-over watch
   publishes   /m20/health         (m20_msgs/HealthReport)  1 Hz; WARN while the robot is not in the velocity controller
   action      /navigate_to_pose   (nav2_msgs/NavigateToPose) OPTIONAL (vendor_nav:=true): the robot's own
@@ -46,6 +52,12 @@ class VendorSDK:
     def stop(self) -> None:
         pass
 
+    def request_regular(self) -> None:
+        pass
+
+    def alive(self) -> bool:
+        return True
+
     def status_line(self) -> str:
         return "stub backend"
 
@@ -59,8 +71,12 @@ class M20UdpSDK:
 
     Parameters (all on the bridge node): robot_ip, robot_port, vx_max, vy_max, wz_max, vx_dead, vy_dead, wz_dead
     (m20_udp.SpeedTable: MEASURE THEM on your robot, tools/robot/m20_probe.py drive), stream_hz (20),
-    v_deadband (0.06 m/s: reported LinearX reads ~0.05 at rest), publish_map_tf (True: map->odom from the vendor
-    localization; set False when AMCL owns map->odom in stage B).
+    v_deadband (0.06 m/s: reported LinearX reads ~0.05 at rest), vendor_pose_delay_s (0.0: how far behind the
+    motion the robot's position report is; the sim assumed 0.1, measure it on the robot at walk step 3).
+
+    Axis frames go out only while the robot's usage mode is Regular (BasicStatus.ControlUsageMode 0): Navigation
+    mode ignores them, and the robot drops back to Regular on its own ~3 s after entering its walking controller,
+    so arming asks for Regular once and every frame is gated on the live status.
     """
 
     def __init__(self, node: Node):
@@ -74,15 +90,14 @@ class M20UdpSDK:
         self.table = proto.SpeedTable(g("vx_max", 2.1), g("vy_max", 0.62), g("wz_max", 1.8),
                                       g("vx_dead", 0.0), g("vy_dead", 0.16), g("wz_dead", 0.15))
         self.reckoner = proto.DeadReckoner(g("v_deadband", 0.06))
-        self.correction = proto.MapCorrection()
-        self.publish_map_tf = bool(g("publish_map_tf", True))
+        self.delay = float(g("vendor_pose_delay_s", 0.0))
         stream_hz = float(g("stream_hz", 20.0))
         self._target = (0.0, 0.0, 0.0)
         self._streaming = False               # True between the first send_velocity and stop()
-        self._zeros_until = 0.0               # keep sending zero frames for 1 s after a stop
+        self._no_motion_warned = False        # the no-MotionStatus fallback is logged once
+        self._last_loc_t = None               # receive time of the last location report published
         self._lock = threading.Lock()
         self.navigating = False               # vendor navigation owns the robot: axis commands are refused
-        self._last_motion_t = None
         self.basic = None                     # latest proto.BasicStatus
         self.location = None                  # latest proto.LocationStatus
         self.battery = None
@@ -120,12 +135,19 @@ class M20UdpSDK:
             self._streaming = True
 
     def stop(self) -> None:
+        """Three zero frames, then silence: the robot brakes within 0.5 s of the last frame, and silence hands the
+        robot back to the pendant (a client that keeps sending zeros stays its one UDP client)."""
         with self._lock:
             self._target = (0.0, 0.0, 0.0)
             self._streaming = False
-            self._zeros_until = time.monotonic() + 1.0
-        for _ in range(3):                   # three zero frames now: the robot brakes within 0.5 s of them
+        for _ in range(3):
             self._send_axis(0.0, 0.0, 0.0)
+
+    def request_regular(self) -> None:
+        self.link.send_msg(proto.usage_mode(proto.MODE_REGULAR))
+
+    def alive(self) -> bool:
+        return self.link.latest(proto.STATUS_BASIC, 3.0) is not None
 
     def request_gait(self, g: int) -> bool:
         """GaitRequest -> the robot's motion state. GAIT_WHEELED = the velocity controller (RL Control, 17)."""
@@ -169,11 +191,14 @@ class M20UdpSDK:
 
     def _stream(self):
         with self._lock:
-            streaming, target, zeros_until = self._streaming, self._target, self._zeros_until
-        if streaming:
-            self._send_axis(*target)
-        elif time.monotonic() < zeros_until:
-            self._send_axis(0.0, 0.0, 0.0)
+            streaming, target = self._streaming, self._target
+        if not streaming:
+            return
+        if self.basic is None or self.basic.usage_mode != proto.MODE_REGULAR:
+            self.node.get_logger().warn(f"axis frame withheld: usage mode is {None if self.basic is None else self.basic.usage_mode}, "
+                                        "not Regular (0); Navigation mode ignores axis commands", throttle_duration_sec=5.0)
+            return
+        self._send_axis(*target)
 
     def _state(self):
         now = self.node.get_clock().now()
@@ -183,32 +208,50 @@ class M20UdpSDK:
         d = self.link.latest(proto.STATUS_DEVICE, 5.0)
         if d is not None:
             self.battery = proto.parse_battery(d)
+        e = self.link.latest_entry(proto.STATUS_NAV, 3.0)
+        if e is not None:
+            self.location = proto.parse_location(e.items)
+            if e.t != self._last_loc_t:          # a NEW report (the cache is read 10 x/s, the robot sends ~2 x/s)
+                self._last_loc_t = e.t
+                if self.location.ok:
+                    self._publish_vendor_pose(now, e.t)
         m = self.link.latest(proto.STATUS_MOTION, 1.0)
         if m is None:
+            # No MotionStatus (1002/4): the robot always sends it; BrightAI's protocol emulator does not model it
+            # (first run against it, 2026-11-05: nothing was published and the stack looked dead). Then the vendor
+            # pose IS the odometry (odom == map, so the adapter's map->odom comes out as the identity) and the twist
+            # is what we are commanding. Unchanged path on the robot.
+            if self.location is None or not self.location.ok:
+                return
+            if not self._no_motion_warned:
+                self.node.get_logger().warn("no MotionStatus (1002/4) from this sender: /odom follows the vendor pose "
+                                            "(an emulator, not the robot?)")
+                self._no_motion_warned = True
+            with self._lock:
+                vx, vy, wz = self._target if self._streaming else (0.0, 0.0, 0.0)
+            ms = proto.MotionStatus(vx, vy, wz, 0.0, 0.0, self.location.yaw, 0.0)
+            self._publish_odom(now, (self.location.x, self.location.y, self.location.yaw), ms)
             return
         ms = proto.parse_motion(m)
-        t = time.monotonic()
-        odom_base = self.reckoner.step(ms, t)
-        loc = self.link.latest(proto.STATUS_NAV, 3.0)
-        if loc is not None:
-            self.location = proto.parse_location(loc)
-            if self.location.ok:
-                self.correction.update((self.location.x, self.location.y, self.location.yaw), odom_base)
-                ps = self._PoseStamped()
-                ps.header.stamp = now.to_msg()
-                ps.header.frame_id = "map"
-                ps.pose.position.x, ps.pose.position.y = self.location.x, self.location.y
-                ps.pose.orientation.z, ps.pose.orientation.w = math.sin(self.location.yaw / 2), math.cos(self.location.yaw / 2)
-                self.pose_pub.publish(ps)
+        odom_base = self.reckoner.step(ms, time.monotonic())
         self._publish_odom(now, odom_base, ms)
-        if self.publish_map_tf and self.correction.valid:
-            self.tf.sendTransform(self._tf(now, "map", "odom", self.correction.map_odom))
         if self._imu_pub is not None:
             imu = self._ImuData()
             imu.header.stamp = now.to_msg()
             imu.data.roll, imu.data.pitch, imu.data.yaw = ms.roll, ms.pitch, ms.yaw
             imu.data.omega_z = ms.wz
             self._imu_pub.publish(imu)
+
+    def _publish_vendor_pose(self, now, rx_monotonic):
+        """Stamped when the report was RECEIVED (ROS time now minus how long ago that was), minus the configured
+        report delay: the adapter looks up odometry at this stamp, so the stamp must be the time the pose was true."""
+        ps = self._PoseStamped()
+        stamp_ns = now.nanoseconds - int((time.monotonic() - rx_monotonic + self.delay) * 1e9)
+        ps.header.stamp.sec, ps.header.stamp.nanosec = stamp_ns // 1_000_000_000, stamp_ns % 1_000_000_000
+        ps.header.frame_id = "map"
+        ps.pose.position.x, ps.pose.position.y = self.location.x, self.location.y
+        ps.pose.orientation.z, ps.pose.orientation.w = math.sin(self.location.yaw / 2), math.cos(self.location.yaw / 2)
+        self.pose_pub.publish(ps)
 
     def _tf(self, now, parent, child, pose):
         t = self._TransformStamped()
@@ -367,7 +410,9 @@ class LocomotionBridge(Node):
         self.get_logger().info(f"Bridge up. backend={backend} connected={self.connected}")
 
     def on_mode(self, msg: RobotMode):
-        self.armed = msg.armed
+        was_armed, self.armed = self.armed, msg.armed
+        if self.armed and not was_armed:
+            self.sdk.request_regular()        # axis frames need Regular usage mode; _stream checks the live status
         if not self.armed:
             self.halt("disarmed by commander")
 
@@ -393,13 +438,20 @@ class LocomotionBridge(Node):
             self.halt(f"cmd_vel timeout ({age:.2f}s > {self.timeout}s)")
 
     def halt(self, reason: str):
+        """stop() sends three zero frames and ends the stream. Nothing else: the old extra send_velocity(0, 0, 0)
+        turned streaming back on, so zero frames went out at 20 Hz forever and the pendant stayed locked out."""
         if not self.stopped:
             self.get_logger().warn(f"HALT: {reason}")
         self.sdk.stop()
-        self.sdk.send_velocity(0.0, 0.0, 0.0)
         self.stopped = True
 
     def heartbeat(self):
+        alive = self.sdk.alive()               # a basic status younger than 3 s; a robot powered on late is accepted
+        if alive and not self.connected:
+            self.get_logger().info(f"robot answering: {self.sdk.status_line()}")
+        elif not alive and self.connected:
+            self.halt("robot status stale (no BasicStatus for 3 s)")
+        self.connected = alive
         h = HealthReport()
         h.header.stamp = self.get_clock().now().to_msg()
         h.node_name = self.get_name()

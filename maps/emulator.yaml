@@ -1,0 +1,9 @@
+# Blank free map for BrightAI's basic_server emulator (sim/m20_sim_server, kinematic body): 20 x 20 m, no walls,
+# the emulator's start pose (0, 0, 0) in the middle. For the ladder's steps 3 and 4 off the robot. Not a site.
+image: emulator.pgm
+mode: trinary
+resolution: 0.05
+origin: [-10.0, -10.0, 0.0]
+negate: 0
+occupied_thresh: 0.65
+free_thresh: 0.25

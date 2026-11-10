@@ -1,0 +1,16 @@
+# Override for the robot's computer (armdog): docker compose -f docker/compose.yaml -f docker/compose.armdog.yaml ...
+# (tools/robot/robot_up.sh --armdog adds it). One change: NO automatic restart. On the robot a crashed bridge must
+# stay down and visible, not come back behind the operator's back while the robot is under control; the launcher's
+# log tail shows the exit and the pendant holder decides. The robot IP, vendor nav off and the speed table are the
+# base file's defaults already. The lidar stage is its own container (tools/lidar/lidar_up.sh), not a compose service.
+services:
+  commander:
+    restart: "no"
+  locomotion_bridge:
+    restart: "no"
+  behavior_engine:
+    restart: "no"
+  mission_server:
+    restart: "no"
+  station_bridge:
+    restart: "no"

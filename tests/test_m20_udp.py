@@ -1,7 +1,9 @@
 """The M20 UDP protocol module, checked against the vendor manual's framing and the measured numbers."""
 import json
 import math
+import socket
 import struct
+import time
 
 import pytest
 
@@ -76,13 +78,6 @@ def test_speed_table_measured_defaults_and_dead_zones():
     assert t.ratios(0.0, 0.0, 0.0) == (0.0, 0.0, 0.0)            # zero stays zero: a stop is a stop
 
 
-def test_pose_compose_invert_are_inverses():
-    a = (1.0, 2.0, 0.7)
-    x, y, th = p.compose(a, p.invert(a))
-    assert abs(x) < 1e-9 and abs(y) < 1e-9 and abs(th) < 1e-9
-    assert p.compose((1.0, 0.0, math.pi / 2), (1.0, 0.0, 0.0)) == pytest.approx((1.0, 1.0, math.pi / 2))
-
-
 def _motion(vx=0.0, vy=0.0, yaw=0.0):
     return p.MotionStatus(vx, vy, 0.0, 0.0, 0.0, yaw, 0.45)
 
@@ -110,13 +105,39 @@ def test_dead_reckoner_ignores_the_rest_bias_and_dropouts():
     assert d.pose[0] == pytest.approx(0.1)
 
 
-def test_map_correction_reproduces_the_vendor_pose():
-    c = p.MapCorrection()
-    odom_base = (2.0, 0.5, 0.3)
-    map_base = (10.0, -4.0, 1.8)
-    c.update(map_base, odom_base)
-    assert c.valid and c.map_pose(odom_base) == pytest.approx(map_base)
-    # the robot moves 1 m forward in odom: the map pose moves 1 m along its own heading
-    moved = p.compose(odom_base, (1.0, 0.0, 0.0))
-    mx, my, _ = c.map_pose(moved)
-    assert math.hypot(mx - map_base[0], my - map_base[1]) == pytest.approx(1.0)
+class _FakeSocket:
+    """The first socket fails every call with OSError (an interface flap); the reopened ones behave."""
+    def __init__(self, log, broken):
+        self.log, self.broken = log, broken
+    def recvfrom(self, n):
+        if self.broken:
+            raise OSError("rx: network is unreachable")
+        raise socket.timeout()
+    def sendto(self, data, addr):
+        if self.broken:
+            raise OSError("tx: network is unreachable")
+        self.log.append(len(data))
+    def close(self): pass
+
+
+def test_link_reopens_its_socket_after_an_error_instead_of_dying():
+    # before 2026-11-09 both threads did `except OSError: break`: one error and the bridge was deaf until restarted
+    sent, made = [], []
+    def factory():
+        made.append(_FakeSocket(sent, broken=not made)); return made[-1]
+    link = p.Link("127.0.0.1", 30000, heartbeat_hz=20.0, sock_factory=factory)
+    link.start()
+    time.sleep(0.8)
+    try:
+        assert link.reopens >= 1 and all(th.is_alive() for th in link._threads)
+        assert len(sent) >= 1                                                      # heartbeats flow again afterwards
+    finally:
+        link.stop()
+
+
+def test_parse_basic_tolerates_a_sender_without_gait_or_usage_mode():
+    # the protocol emulator sends only MotionState / Charge / HES / ControlUsageMode; a bare MotionState is enough
+    b = p.parse_basic({"BasicStatus": {"MotionState": 17, "Charge": 0, "HES": 0, "ControlUsageMode": 0}})
+    assert (b.motion_state, b.gait, b.charge, b.hard_estop, b.usage_mode) == (17, 0, 0, False, 0)
+    b = p.parse_basic({"BasicStatus": {"MotionState": 4}})
+    assert (b.motion_state, b.gait, b.usage_mode) == (4, 0, 0)
