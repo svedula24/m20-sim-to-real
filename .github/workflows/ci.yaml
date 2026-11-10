@@ -70,6 +70,10 @@ jobs:
     # tools/ci/shared_files.txt: files that must stay byte-identical to the sim repo's (ROS2_Nav2_Mako), so the robot
     # drives on the Nav2 settings, lidar stage, localization adapter and eval the sim was measured with
     runs-on: ubuntu-24.04
+    env:
+      # Mako's branch holding the shared files. nav2-robot-shape until Mako PR #11 merges into
+      # 3dgs-sim-nl-navigation-offline; flip it then (the script's default is the base branch).
+      MAKO_REF: nav2-robot-shape
     steps:
       - uses: actions/checkout@v7
       - run: bash tools/ci/shared_files_check.sh
