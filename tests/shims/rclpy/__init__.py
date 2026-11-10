@@ -38,6 +38,6 @@ class _Clock:
     def now(self): return _Time(FAKE_TIME_NS[0])
 
 class _Logger:
-    def info(self, m): pass
-    def warn(self, m): pass
-    def error(self, m): pass
+    def info(self, m, **kw): pass
+    def warn(self, m, **kw): pass          # kw: throttle_duration_sec
+    def error(self, m, **kw): pass

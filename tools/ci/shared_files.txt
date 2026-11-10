@@ -1,7 +1,7 @@
 # Files that are byte-identical copies of ROS2_Nav2_Mako's (the sim repo). Edit them THERE first, run its tests, then
 # copy here; tools/ci/shared_files_check.sh (CI job `shared`) fails on any difference. One path per line, same path
-# in both repos. Why: the robot must drive on exactly the Nav2 settings, lidar stage, localization adapter and
-# eval the sim was measured with (2026-11-09: vendor-style localization 9/9 on circuit4).
+# in both repos; test shims are not shared, each repo stubs what its own tests need. Why: the robot must drive on exactly
+# the Nav2 settings, lidar stage, localization adapter and eval the sim was measured with (2026-11-09: 9/9 on circuit4).
 tools/nav/nav2_profile.py
 tools/nav/lidar_stage.sh
 tools/nav/map_tf_adapter.py
@@ -14,4 +14,3 @@ tools/nlnav_eval/compare.py
 tests/test_nav2_profile.py
 tests/test_route.py
 tests/test_map_tf_adapter.py
-tests/shims/geometry_msgs/msg.py

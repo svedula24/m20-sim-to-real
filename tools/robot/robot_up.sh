@@ -43,8 +43,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 echo "[1/6] compose services (commander, locomotion bridge -> robot, mission server, station)"
-# nav2: map->odom comes from the adapter (step 4), so the bridge must not publish it too; vendor: the bridge's own
-M20_VENDOR_NAV=$([ "$NAV" = vendor ] && echo true || echo false) M20_PUBLISH_MAP_TF=$([ "$NAV" = nav2 ] && echo false || echo true) \
+M20_VENDOR_NAV=$([ "$NAV" = vendor ] && echo true || echo false) \
   docker compose -f "$REPO/docker/compose.yaml" up -d commander locomotion_bridge mission_server station_bridge
 bash "$REPO/tools/dev/container_deps.sh"
 for _ in $(seq 1 30); do
@@ -68,6 +67,9 @@ docker cp "$REPO/tools/nav/map_tf_adapter.py" "$C:/cfg/map_tf_adapter.py"
 echo "[3/6] map_server: the robot's map on /map (frame map = the vendor localization frame)"
 docker exec -d "$C" bash -lc "$SRC; ros2 run nav2_map_server map_server --ros-args -p yaml_filename:=/cfg/maps/site.yaml -p use_sim_time:=false >/cfg/out/map_server.log 2>&1"
 docker exec -d "$C" bash -lc "$SRC; ros2 run nav2_lifecycle_manager lifecycle_manager --ros-args -r __node:=lifecycle_manager_map -p autostart:=true -p node_names:=\"['map_server']\" >/cfg/out/map_lifecycle.log 2>&1"
+# map->odom from the robot's own ~2 Hz position report (/m20/vendor_pose, one message per report from the bridge),
+# the way the sim rehearsed it (9/9 on circuit4, believed pose within 0.04 m). The bridge publishes no map->odom.
+docker exec -d "$C" bash -lc "$SRC; python3 /cfg/map_tf_adapter.py >/cfg/out/map_tf_adapter.log 2>&1"
 
 if [ "$NAV" = nav2 ]; then
   echo "[4/6] Nav2 on the vendor map; lidar: RoboSense Airy x2 via rslidar_sdk -> /scan_front + /scan_rear"
@@ -82,9 +84,6 @@ if [ "$NAV" = nav2 ]; then
   # min speeds above the robot's dead zones), the static site map, the two scans. M20_MAX_VEL raises the cap later.
   docker exec "$C" python3 /cfg/nav2_profile.py /cfg/nav2_params.yaml --profile robot_shape --max-vel "${M20_MAX_VEL:-0.3}" \
     --static-map --scans scan_front,scan_rear
-  # map->odom from the robot's own 2 Hz position report (/m20/vendor_pose, published by the bridge), the way the
-  # sim rehearsed it (9/9 on circuit4, believed pose within 0.04 m): the bridge itself publishes no map->odom here
-  docker exec -d "$C" bash -lc "$SRC; python3 /cfg/map_tf_adapter.py >/cfg/out/map_tf_adapter.log 2>&1"
   docker exec -d "$C" bash -lc "$SRC; ros2 launch nav2_bringup navigation_launch.py params_file:=/cfg/nav2_params.yaml use_sim_time:=false >/cfg/out/nav2.log 2>&1"
   for _ in $(seq 1 40); do docker exec "$C" grep -qa "Managed nodes are active" /cfg/out/nav2.log 2>/dev/null && break; sleep 1; done
   docker exec "$C" grep -qa "Managed nodes are active" /cfg/out/nav2.log || { echo "ERROR: Nav2 did not become active (docker exec $C tail -30 /cfg/out/nav2.log)"; exit 1; }

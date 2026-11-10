@@ -45,14 +45,15 @@ services:
 
   locomotion_bridge:
     # The only process that talks to the robot: UDP inspection protocol to M20_ROBOT_IP:30000 (src/m20_locomotion_bridge).
-    # M20_VENDOR_NAV=true serves /navigate_to_pose with the robot's own navigation (stage A, no Nav2).
+    # M20_VENDOR_NAV=true serves /navigate_to_pose with the robot's own navigation (M20_NAV=vendor in robot_up.sh);
+    # default false since 2026-11-09: Nav2 answers that action, two servers would fight over one goal.
+    # map->odom is NOT published here (tools/nav/map_tf_adapter.py does it from /m20/vendor_pose).
     # The speed table defaults are the measured 2026-09-29 numbers; override after tools/robot/m20_probe.py drive.
     <<: *stack
     command: >
       ros2 run m20_locomotion_bridge bridge_node --ros-args
-      -p sdk_backend:=m20_udp -p robot_ip:=${M20_ROBOT_IP:-10.21.31.103} -p vendor_nav:=${M20_VENDOR_NAV:-true}
+      -p sdk_backend:=m20_udp -p robot_ip:=${M20_ROBOT_IP:-10.21.31.103} -p vendor_nav:=${M20_VENDOR_NAV:-false}
       -p vx_max:=${M20_VX_MAX:-2.1} -p vy_max:=${M20_VY_MAX:-0.62} -p wz_max:=${M20_WZ_MAX:-1.8}
-      -p publish_map_tf:=${M20_PUBLISH_MAP_TF:-true}
     environment:
       - "ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-42}"
       - "RMW_IMPLEMENTATION=rmw_cyclonedds_cpp"
