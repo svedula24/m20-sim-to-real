@@ -36,7 +36,16 @@ code that talks to the robot; docs/REAL_ROBOT.md is the plan and the test ladder
 - Launchers: background work not stopped on failure paths; success printed after a refused step; checks through
   the `ros2` CLI daemon inside the commander container (it wedges: read ROS state with a small rclpy script).
 - Threads: the Link's receiver thread and the ROS timers share the cache only under its lock.
-- Duplication: the shared helpers live in `m20_udp.py`; a second framing or parsing copy is a finding.
+- Duplication: the shared helpers live in `m20_udp.py`; a second framing or parsing copy is a finding. Files
+  listed in `tools/ci/shared_files.txt` are byte-identical copies of the ROS2_Nav2_Mako originals (CI checks); edit
+  them in Mako first, then copy.
+- Lean (the ponytail review rules, 2026-11-09): after correctness and safety, every extra line is a cost. Flag
+  code that should not exist or should be smaller: dead code and unused options; a helper the repo already has
+  (name its path); stdlib or platform doing the job of new code or a new dependency; an abstraction, flag or
+  config with one user or none; near-copies that must change together; a function mixing unrelated jobs. A
+  `shortcut:` comment naming its ceiling and upgrade path is a decision, not a finding. Every finding needs a
+  concrete failing case and the smallest fix, preferring deletion; no style taste, no "consider". Finish with
+  a verdict (ship, or which findings first) and the lines that could go.
 
 ## Conventions
 
